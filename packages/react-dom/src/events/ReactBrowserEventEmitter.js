@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,7 +7,8 @@
  * @flow
  */
 
-import {registrationNameDependencies} from 'events/EventPluginRegistry';
+import {registrationNameDependencies} from 'legacy-events/EventPluginRegistry';
+import type {DOMTopLevelEventType} from 'legacy-events/TopLevelEventTypes';
 import {
   TOP_BLUR,
   TOP_CANCEL,
@@ -84,22 +85,23 @@ import isEventSupported from './isEventSupported';
  *    React Core     .  General Purpose Event Plugin System
  */
 
-const alreadyListeningTo = {};
-let reactTopListenersCounter = 0;
+const PossiblyWeakMap = typeof WeakMap === 'function' ? WeakMap : Map;
+const elementListeningSets:
+  | WeakMap
+  | Map<
+      Document | Element | Node,
+      Set<DOMTopLevelEventType | string>,
+    > = new PossiblyWeakMap();
 
-/**
- * To ensure no conflicts with other potential React instances on the page
- */
-const topListenersIDKey = '_reactListenersID' + ('' + Math.random()).slice(2);
-
-function getListeningForDocument(mountAt: any) {
-  // In IE8, `mountAt` is a host object and doesn't have `hasOwnProperty`
-  // directly.
-  if (!Object.prototype.hasOwnProperty.call(mountAt, topListenersIDKey)) {
-    mountAt[topListenersIDKey] = reactTopListenersCounter++;
-    alreadyListeningTo[mountAt[topListenersIDKey]] = {};
+export function getListeningSetForElement(
+  element: Document | Element | Node,
+): Set<DOMTopLevelEventType | string> {
+  let listeningSet = elementListeningSets.get(element);
+  if (listeningSet === undefined) {
+    listeningSet = new Set();
+    elementListeningSets.set(element, listeningSet);
   }
-  return alreadyListeningTo[mountAt[topListenersIDKey]];
+  return listeningSet;
 }
 
 /**
@@ -125,62 +127,71 @@ function getListeningForDocument(mountAt: any) {
  */
 export function listenTo(
   registrationName: string,
-  mountAt: Document | Element,
-) {
-  const isListening = getListeningForDocument(mountAt);
+  mountAt: Document | Element | Node,
+): void {
+  const listeningSet = getListeningSetForElement(mountAt);
   const dependencies = registrationNameDependencies[registrationName];
 
   for (let i = 0; i < dependencies.length; i++) {
     const dependency = dependencies[i];
-    if (!(isListening.hasOwnProperty(dependency) && isListening[dependency])) {
-      switch (dependency) {
-        case TOP_SCROLL:
-          trapCapturedEvent(TOP_SCROLL, mountAt);
-          break;
-        case TOP_FOCUS:
-        case TOP_BLUR:
-          trapCapturedEvent(TOP_FOCUS, mountAt);
-          trapCapturedEvent(TOP_BLUR, mountAt);
-          // We set the flag for a single dependency later in this function,
-          // but this ensures we mark both as attached rather than just one.
-          isListening[TOP_BLUR] = true;
-          isListening[TOP_FOCUS] = true;
-          break;
-        case TOP_CANCEL:
-        case TOP_CLOSE:
-          if (isEventSupported(getRawEventName(dependency), true)) {
-            trapCapturedEvent(dependency, mountAt);
-          }
-          break;
-        case TOP_INVALID:
-        case TOP_SUBMIT:
-        case TOP_RESET:
-          // We listen to them on the target DOM elements.
-          // Some of them bubble so we don't want them to fire twice.
-          break;
-        default:
-          // By default, listen on the top level to all non-media events.
-          // Media events don't bubble so adding the listener wouldn't do anything.
-          const isMediaEvent = mediaEventTypes.indexOf(dependency) !== -1;
-          if (!isMediaEvent) {
-            trapBubbledEvent(dependency, mountAt);
-          }
-          break;
-      }
-      isListening[dependency] = true;
+    listenToTopLevel(dependency, mountAt, listeningSet);
+  }
+}
+
+export function listenToTopLevel(
+  topLevelType: DOMTopLevelEventType,
+  mountAt: Document | Element | Node,
+  listeningSet: Set<DOMTopLevelEventType | string>,
+): void {
+  if (!listeningSet.has(topLevelType)) {
+    switch (topLevelType) {
+      case TOP_SCROLL:
+        trapCapturedEvent(TOP_SCROLL, mountAt);
+        break;
+      case TOP_FOCUS:
+      case TOP_BLUR:
+        trapCapturedEvent(TOP_FOCUS, mountAt);
+        trapCapturedEvent(TOP_BLUR, mountAt);
+        // We set the flag for a single dependency later in this function,
+        // but this ensures we mark both as attached rather than just one.
+        listeningSet.add(TOP_BLUR);
+        listeningSet.add(TOP_FOCUS);
+        break;
+      case TOP_CANCEL:
+      case TOP_CLOSE:
+        if (isEventSupported(getRawEventName(topLevelType))) {
+          trapCapturedEvent(topLevelType, mountAt);
+        }
+        break;
+      case TOP_INVALID:
+      case TOP_SUBMIT:
+      case TOP_RESET:
+        // We listen to them on the target DOM elements.
+        // Some of them bubble so we don't want them to fire twice.
+        break;
+      default:
+        // By default, listen on the top level to all non-media events.
+        // Media events don't bubble so adding the listener wouldn't do anything.
+        const isMediaEvent = mediaEventTypes.indexOf(topLevelType) !== -1;
+        if (!isMediaEvent) {
+          trapBubbledEvent(topLevelType, mountAt);
+        }
+        break;
     }
+    listeningSet.add(topLevelType);
   }
 }
 
 export function isListeningToAllDependencies(
   registrationName: string,
   mountAt: Document | Element,
-) {
-  const isListening = getListeningForDocument(mountAt);
+): boolean {
+  const listeningSet = getListeningSetForElement(mountAt);
   const dependencies = registrationNameDependencies[registrationName];
+
   for (let i = 0; i < dependencies.length; i++) {
     const dependency = dependencies[i];
-    if (!(isListening.hasOwnProperty(dependency) && isListening[dependency])) {
+    if (!listeningSet.has(dependency)) {
       return false;
     }
   }

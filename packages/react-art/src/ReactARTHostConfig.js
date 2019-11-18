@@ -1,21 +1,28 @@
 /**
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-import * as ReactScheduler from 'shared/ReactScheduler';
 import Transform from 'art/core/transform';
 import Mode from 'art/modes/current';
-import invariant from 'fbjs/lib/invariant';
-import emptyObject from 'fbjs/lib/emptyObject';
+import invariant from 'shared/invariant';
 
 import {TYPES, EVENT_TYPES, childrenAsString} from './ReactARTInternals';
+import type {
+  ReactEventResponder,
+  ReactEventResponderInstance,
+} from 'shared/ReactTypes';
 
 const pooledTransform = new Transform();
 
+const NO_CONTEXT = {};
 const UPDATE_SIGNAL = {};
+if (__DEV__) {
+  Object.freeze(NO_CONTEXT);
+  Object.freeze(UPDATE_SIGNAL);
+}
 
 /** Helper Methods */
 
@@ -318,15 +325,16 @@ export function shouldDeprioritizeSubtree(type, props) {
 }
 
 export function getRootHostContext() {
-  return emptyObject;
+  return NO_CONTEXT;
 }
 
 export function getChildHostContext() {
-  return emptyObject;
+  return NO_CONTEXT;
 }
 
-export const scheduleDeferredCallback = ReactScheduler.scheduleWork;
-export const cancelDeferredCallback = ReactScheduler.cancelScheduledWork;
+export const scheduleTimeout = setTimeout;
+export const cancelTimeout = clearTimeout;
+export const noTimeout = -1;
 
 export function shouldSetTextContent(type, props) {
   return (
@@ -334,10 +342,11 @@ export function shouldSetTextContent(type, props) {
   );
 }
 
-export const now = ReactScheduler.now;
-
 // The ART renderer is secondary to the React DOM renderer.
 export const isPrimaryRenderer = false;
+
+// The ART renderer shouldn't trigger missing act() warnings
+export const warnsIfNotActing = false;
 
 export const supportsMutation = true;
 
@@ -397,4 +406,66 @@ export function commitUpdate(
   newProps,
 ) {
   instance._applyProps(instance, newProps, oldProps);
+}
+
+export function hideInstance(instance) {
+  instance.hide();
+}
+
+export function hideTextInstance(textInstance) {
+  // Noop
+}
+
+export function unhideInstance(instance, props) {
+  if (props.visible == null || props.visible) {
+    instance.show();
+  }
+}
+
+export function unhideTextInstance(textInstance, text): void {
+  // Noop
+}
+
+export function mountResponderInstance(
+  responder: ReactEventResponder<any, any>,
+  responderInstance: ReactEventResponderInstance<any, any>,
+  props: Object,
+  state: Object,
+  instance: Object,
+) {
+  throw new Error('Not yet implemented.');
+}
+
+export function unmountResponderInstance(
+  responderInstance: ReactEventResponderInstance<any, any>,
+): void {
+  throw new Error('Not yet implemented.');
+}
+
+export function getFundamentalComponentInstance(fundamentalInstance) {
+  throw new Error('Not yet implemented.');
+}
+
+export function mountFundamentalComponent(fundamentalInstance) {
+  throw new Error('Not yet implemented.');
+}
+
+export function shouldUpdateFundamentalComponent(fundamentalInstance) {
+  throw new Error('Not yet implemented.');
+}
+
+export function updateFundamentalComponent(fundamentalInstance) {
+  throw new Error('Not yet implemented.');
+}
+
+export function unmountFundamentalComponent(fundamentalInstance) {
+  throw new Error('Not yet implemented.');
+}
+
+export function getInstanceFromNode(node) {
+  throw new Error('Not yet implemented.');
+}
+
+export function beforeRemoveInstance(instance) {
+  // noop
 }

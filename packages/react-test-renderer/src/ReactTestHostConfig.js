@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,9 +7,15 @@
  * @flow
  */
 
-import emptyObject from 'fbjs/lib/emptyObject';
+import warning from 'shared/warning';
 
-import * as TestRendererScheduling from './ReactTestRendererScheduling';
+import type {
+  ReactEventResponder,
+  ReactEventResponderInstance,
+  ReactFundamentalComponentInstance,
+} from 'shared/ReactTypes';
+
+import {enableFlareAPI} from 'shared/ReactFeatureFlags';
 
 export type Type = string;
 export type Props = Object;
@@ -21,12 +27,15 @@ export type Container = {|
 export type Instance = {|
   type: string,
   props: Object,
+  isHidden: boolean,
   children: Array<Instance | TextInstance>,
+  internalInstanceHandle: Object,
   rootContainerInstance: Container,
   tag: 'INSTANCE',
 |};
 export type TextInstance = {|
   text: string,
+  isHidden: boolean,
   tag: 'TEXT',
 |};
 export type HydratableInstance = Instance | TextInstance;
@@ -34,20 +43,35 @@ export type PublicInstance = Instance | TextInstance;
 export type HostContext = Object;
 export type UpdatePayload = Object;
 export type ChildSet = void; // Unused
-
-const UPDATE_SIGNAL = {};
+export type TimeoutHandle = TimeoutID;
+export type NoTimeout = -1;
+export type EventResponder = any;
 
 export * from 'shared/HostConfigWithNoPersistence';
 export * from 'shared/HostConfigWithNoHydration';
+
+const EVENT_COMPONENT_CONTEXT = {};
+const NO_CONTEXT = {};
+const UPDATE_SIGNAL = {};
+const nodeToInstanceMap = new WeakMap();
+
+if (__DEV__) {
+  Object.freeze(NO_CONTEXT);
+  Object.freeze(UPDATE_SIGNAL);
+}
 
 export function getPublicInstance(inst: Instance | TextInstance): * {
   switch (inst.tag) {
     case 'INSTANCE':
       const createNodeMock = inst.rootContainerInstance.createNodeMock;
-      return createNodeMock({
+      const mockNode = createNodeMock({
         type: inst.type,
         props: inst.props,
       });
+      if (typeof mockNode === 'object' && mockNode !== null) {
+        nodeToInstanceMap.set(mockNode, inst);
+      }
+      return mockNode;
     default:
       return inst;
   }
@@ -57,6 +81,15 @@ export function appendChild(
   parentInstance: Instance | Container,
   child: Instance | TextInstance,
 ): void {
+  if (__DEV__) {
+    warning(
+      Array.isArray(parentInstance.children),
+      'An invalid container has been provided. ' +
+        'This may indicate that another renderer is being used in addition to the test renderer. ' +
+        '(For example, ReactDOM.createPortal inside of a ReactTestRenderer tree.) ' +
+        'This is not supported.',
+    );
+  }
   const index = parentInstance.children.indexOf(child);
   if (index !== -1) {
     parentInstance.children.splice(index, 1);
@@ -88,7 +121,7 @@ export function removeChild(
 export function getRootHostContext(
   rootContainerInstance: Container,
 ): HostContext {
-  return emptyObject;
+  return NO_CONTEXT;
 }
 
 export function getChildHostContext(
@@ -96,7 +129,7 @@ export function getChildHostContext(
   type: string,
   rootContainerInstance: Container,
 ): HostContext {
-  return emptyObject;
+  return NO_CONTEXT;
 }
 
 export function prepareForCommit(containerInfo: Container): void {
@@ -114,10 +147,22 @@ export function createInstance(
   hostContext: Object,
   internalInstanceHandle: Object,
 ): Instance {
+  let propsToUse = props;
+  if (enableFlareAPI) {
+    if (props.listeners != null) {
+      // We want to remove the "listeners" prop
+      // as we don't want it in the test renderer's
+      // instance props.
+      const {listeners, ...otherProps} = props; // eslint-disable-line
+      propsToUse = otherProps;
+    }
+  }
   return {
     type,
-    props,
+    props: propsToUse,
+    isHidden: false,
     children: [],
+    internalInstanceHandle,
     rootContainerInstance,
     tag: 'INSTANCE',
   };
@@ -169,20 +214,27 @@ export function createTextInstance(
   hostContext: Object,
   internalInstanceHandle: Object,
 ): TextInstance {
+  if (__DEV__ && enableFlareAPI) {
+    warning(
+      hostContext !== EVENT_COMPONENT_CONTEXT,
+      'validateDOMNesting: React event components cannot have text DOM nodes as children. ' +
+        'Wrap the child text "%s" in an element.',
+      text,
+    );
+  }
   return {
     text,
+    isHidden: false,
     tag: 'TEXT',
   };
 }
 
-export const isPrimaryRenderer = true;
-// This approach enables `now` to be mocked by tests,
-// Even after the reconciler has initialized and read host config values.
-export const now = () => TestRendererScheduling.nowImplementation();
-export const scheduleDeferredCallback =
-  TestRendererScheduling.scheduleDeferredCallback;
-export const cancelDeferredCallback =
-  TestRendererScheduling.cancelDeferredCallback;
+export const isPrimaryRenderer = false;
+export const warnsIfNotActing = true;
+
+export const scheduleTimeout = setTimeout;
+export const cancelTimeout = clearTimeout;
+export const noTimeout = -1;
 
 // -------------------
 //     Mutation
@@ -226,3 +278,96 @@ export function resetTextContent(testElement: Instance): void {
 export const appendChildToContainer = appendChild;
 export const insertInContainerBefore = insertBefore;
 export const removeChildFromContainer = removeChild;
+
+export function hideInstance(instance: Instance): void {
+  instance.isHidden = true;
+}
+
+export function hideTextInstance(textInstance: TextInstance): void {
+  textInstance.isHidden = true;
+}
+
+export function unhideInstance(instance: Instance, props: Props): void {
+  instance.isHidden = false;
+}
+
+export function unhideTextInstance(
+  textInstance: TextInstance,
+  text: string,
+): void {
+  textInstance.isHidden = false;
+}
+
+export function mountResponderInstance(
+  responder: ReactEventResponder<any, any>,
+  responderInstance: ReactEventResponderInstance<any, any>,
+  props: Object,
+  state: Object,
+  instance: Instance,
+) {
+  // noop
+}
+
+export function unmountResponderInstance(
+  responderInstance: ReactEventResponderInstance<any, any>,
+): void {
+  // noop
+}
+
+export function getFundamentalComponentInstance(fundamentalInstance): Instance {
+  const {impl, props, state} = fundamentalInstance;
+  return impl.getInstance(null, props, state);
+}
+
+export function mountFundamentalComponent(
+  fundamentalInstance: ReactFundamentalComponentInstance<any, any>,
+): void {
+  const {impl, instance, props, state} = fundamentalInstance;
+  const onMount = impl.onMount;
+  if (onMount !== undefined) {
+    onMount(null, instance, props, state);
+  }
+}
+
+export function shouldUpdateFundamentalComponent(
+  fundamentalInstance: ReactFundamentalComponentInstance<any, any>,
+): boolean {
+  const {impl, prevProps, props, state} = fundamentalInstance;
+  const shouldUpdate = impl.shouldUpdate;
+  if (shouldUpdate !== undefined) {
+    return shouldUpdate(null, prevProps, props, state);
+  }
+  return true;
+}
+
+export function updateFundamentalComponent(
+  fundamentalInstance: ReactFundamentalComponentInstance<any, any>,
+): void {
+  const {impl, instance, prevProps, props, state} = fundamentalInstance;
+  const onUpdate = impl.onUpdate;
+  if (onUpdate !== undefined) {
+    onUpdate(null, instance, prevProps, props, state);
+  }
+}
+
+export function unmountFundamentalComponent(
+  fundamentalInstance: ReactFundamentalComponentInstance<any, any>,
+): void {
+  const {impl, instance, props, state} = fundamentalInstance;
+  const onUnmount = impl.onUnmount;
+  if (onUnmount !== undefined) {
+    onUnmount(null, instance, props, state);
+  }
+}
+
+export function getInstanceFromNode(mockNode: Object) {
+  const instance = nodeToInstanceMap.get(mockNode);
+  if (instance !== undefined) {
+    return instance.internalInstanceHandle;
+  }
+  return null;
+}
+
+export function beforeRemoveInstance(instance) {
+  // noop
+}
